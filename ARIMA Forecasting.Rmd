@@ -1,0 +1,251 @@
+---
+title: "Time series modelling"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include = FALSE}
+
+# Set up the default parameters
+# 1. The code block will be shown in the document
+# 2. set up figure display size
+# 3. turn off all the warnings and messages
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width = 8, fig.height = 4)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+```
+
+
+#  Data Analysis
+
+Energy Consumption data from 2010-01-01 to 2015-05-31. Each data point represents the daily energy consumption. specifically, we are using the log-transformed time series to deal with fluctuating variance/heteroskedasticity.
+
+```{r library}
+library(zoo)
+library(lubridate)
+library(mgcv)
+library(TSA)
+library(dynlm)
+
+```
+# Instructions on reading the data
+
+
+```{r load data}
+#Read in data
+Input_Data<-read.csv("Data.csv")
+year = Input_Data$Year
+month = Input_Data$Month
+day = Input_Data$Day
+datemat = cbind(as.character(day),as.character(month),as.character(year))
+paste.dates = function(date){
+    day = date[1]; month=date[2]; year = date[3]
+    return(paste(day,month,year,sep="/"))
+}
+dates = apply(datemat,1,paste.dates)
+dates = as.Date(dates, format="%d/%m/%Y")
+Input_Data = cbind(dates,Input_Data)
+attach(Input_Data)
+tmp = log(Volume) # log-transform the data
+
+# Extract Catagorical Month and Week Indicators
+month = as.factor(format(dates,"%b"))
+week = as.factor(weekdays(dates))
+
+# Convert original data into time series (ts)
+Consumption = ts(tmp,start=c(2010,1,1),frequency=365) # Org data
+
+```
+
+
+# Part 1: Trend and Seasonality fitting
+
+
+
+```{r}
+ts.plot(Consumption, main="TS Plot")
+acf(Consumption,main="ACF",lag.max=52*4)
+
+diff.consumption=diff(Consumption,lag=7);
+diff.consumption = diff.consumption[!is.na(diff.consumption)]
+diff=ts(diff.consumption)
+plot(diff,type="l",main="weekly differenced data time series")
+acf(diff, main="ACF of weekly difference data ")
+
+
+
+
+```
+
+*Response*: From the TS plot we can see periods of in increasing and decreasing trends. We can also see the presence of non constant variance. From the ACF plot, we can see many lags have significant autocorrelation and we can also clearly observe the seasonality. On the differenced time series, the trend appears to be removed (Constant mean) but there is still presence of non constant variance. From the ACF plot of differenced data, we can see the effect of seasonality has been removed to a great extent. The ACF plot still has significant autocorrelation in many lags but dies down quickly. The differenced time series is much closer to stationarity than the original series.
+
+
+*Trend estimation models* on the time series data: Parametric Quadratic Polynomial, and Splines.
+
+```{r}
+time.pts<-c(1:length(Consumption))
+time.pts<-c(time.pts - min(time.pts))/max(time.pts)
+# Parametric polynomial
+x1<-time.pts
+x2<-time.pts^2
+lm.fit<-lm(Consumption~x1+x2)
+summary(lm.fit)
+fit.lm= ts(fitted(lm.fit),start=c(2010,1,1),frequency=365)
+ts.plot(Consumption,main="Trend:Parametric polynomial")
+lines(fit.lm,lwd=3,col="purple")
+
+
+# Splines
+gam.fit<-gam(Consumption~s(time.pts))
+fit.gam= ts(fitted(gam.fit),start=c(2010,1,1),frequency=365)
+
+ts.plot(Consumption,main="Trend:Splines",ylab="Exchange rate")
+lines(fit.gam,lwd=3,col="red")
+
+#Precision
+preds1 <- as.vector(fit.lm)
+preds2 <- as.vector(fit.gam)
+obs <- as.vector(Consumption)
+
+PM1 <- sum((preds1-obs)^2)/sum((obs-mean(obs))^2)
+PM2 <- sum((preds2-obs)^2)/sum((obs-mean(obs))^2)
+
+
+```
+
+*Response:*  From the plot of overlayed fitted values, we can see that splines model is able to capture the overall trend better than the parametric polynomial regression.The accuracy measure for parametric polynomial is 0.769 and for the spline model it is 0.718.
+
+
+*Seasonality estimation model:* Using ANOVA approach fr(1) Using Month seasonality only; (2) Using both Months and Week seasonality.
+
+```{r}
+model1=dynlm(Consumption~month)
+summary(model1)
+fit.model1=model1$fitted
+
+
+model2=dynlm(Consumption~month+week)
+summary(model2)
+fit.model2=model2$fitted
+
+anova(model1,model2)
+
+
+```
+
+*Response:* Small p value shows that we can reject null hypothesis (Simpler model is better). SO the model with monthly and weekly seasonality is better.
+
+*Estimating both trend and seasonality*: Parametric Polynomial Regression and Nonparametric modeling (spline). For simplicity,I am using Month+Week for seasonality for both trend fittings.
+
+```{r}g
+#Equally spaced time points
+
+lm.fit=dynlm(Consumption~x1+x2+month+week)
+summary(lm.fit)
+gam.fit=gam(Consumption~s(time.pts)+month+week)
+fit.gam=ts(fitted(gam.fit),start=c(2010,1,1),frequency=365)
+fit.lm=ts(fitted(lm.fit),start=c(2010,1,1),frequency=365)
+ts.plot(Consumption,main="Trend-Seasonality using Parametric polynomial regression",ylab="Temp")
+lines(fit.lm,lwd=3,col="yellow")
+ts.plot(Consumption,main="Trend-Seasonality using Non parametric model",ylab="Temp")
+lines(fit.gam,lwd=3,col="red")
+
+preds1 <- as.vector(fit.lm)
+preds2 <- as.vector(fit.gam)
+obs <- as.vector(Consumption)
+
+PM1 <- sum((preds1-obs)^2)/sum((obs-mean(obs))^2)
+PM2 <- sum((preds2-obs)^2)/sum((obs-mean(obs))^2)
+
+```
+
+*Response:*  The spline model has lower PM measure (0.38737) compared to the parametric model (0.438). In general both models are able to reasonably capture the trend and seasonality in the data.
+
+
+**Model residual Analysis**
+
+```{r}
+residprocess=Consumption-fitted(gam.fit)
+residprocess=ts(residprocess,start=c(2010,1,1),frequency=365)
+par(mfcol=c(1,2))
+ts.plot(residprocess,main="Residual")
+acf(residprocess,main="ACF-Residuals",lag.max =50)
+
+```
+
+*Response:* 
+From the residuals we can see that trend has been removed. The time series plot still shows non constant variance. From the ACF plot we can see that the effect of seasonality is greatly removed. But it still has significant autocorrealtion in the intial lags and dies down quickly. The residual process is non stationary but it is much closer to stationarity than the original model.
+
+
+**ARIMA FORECASTING** Using the iterative model selection approach (with corrected AIC score as model performance metric) I found that ARIMA model with the order of (2,0,1), and seasonal order (1,0,1), period=7 captures this data perfectly.
+```{r}
+train <- Consumption[1:(length(Consumption)-14)]
+
+mod = arima(train, order = c(2,0,1),seasonal = list(order = 
+c(1,0,1),period=7),method = "ML")
+AIC(mod)
+mod
+```
+
+```{r}
+## p-value function for the z-test taking as input the test statistic
+pvalue.coef <- function(tv){
+2*(1-pnorm(abs(tv)))
+}
+## compute the test statistics
+tvalues <-as.numeric(mod$coef)/as.numeric(sqrt(diag(mod$var.coef)))
+
+## Apply the pvalue.coef function
+pvalues<- sapply(tvalues, pvalue.coef)
+
+pvalues
+```
+
+*Response:* From the p values we can observe that all coefficients are statistically significant. The AIC of the model is -2909.7
+
+
+**Forecasting for the next two weeks with 95% CI also provided in the plot**
+```{r}
+time <- time(Consumption)
+n<-length(Consumption)
+ntrain<-length(train)
+forecast <- as.vector(predict(mod,n.ahead=14))
+lower <- forecast$pred-1.96*forecast$se
+upper<- forecast$pred+1.96*forecast$se
+
+plot(time[(n-50):n],Consumption[(n-50):n],type="l",ylim=c(min(lower),max(upper)),main=" Forecast")
+lines(time[(ntrain+1):n],lower,lty=2,lwd=1,col="blue")
+points(time[(ntrain+1):n],forecast$pred,col="red")
+lines(time[(ntrain+1):n],upper,lty=2,lwd=1,col="blue")
+
+
+```
+
+*Response:* Most of the predicted values are notably higher than the actual values; However, the actual values lie within the 95% confidence intervals. In general the forecasts are good.
+
+
+**MODEL PERFORMANCE EVALUATION** Mean squared error (MSE), Mean absolute error (MAE), mean absolute percent error (MAPE), percision measure (PM). 
+
+```{r} 
+prediction = forecast$pred
+observed = Consumption[(ntrain+1):n]
+#MSE
+mean((observed-mean(observed))^2)
+
+#MAE
+mean(abs(prediction-observed))
+
+#MAPE
+mean(abs(prediction-observed)/observed)
+
+#Precision
+sum((prediction-observed)^2)/sum((observed-mean(observed))^2)
+
+#No of points in prediction band
+sum(observed<lower)+sum(observed>upper)
+```
+
+*Response:* All the metrics are providing satisying results.
